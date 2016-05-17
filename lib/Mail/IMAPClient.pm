@@ -19,6 +19,7 @@ use Fcntl qw(F_GETFL F_SETFL O_NONBLOCK);
 use Errno qw(EAGAIN EBADF ECONNRESET EPIPE);
 use List::Util qw(first min max sum);
 use MIME::Base64 qw(encode_base64 decode_base64);
+use Digest::MD5 qw(md5 md5_hex md5_base64);
 use File::Spec ();
 
 use constant APPEND_BUFFER_SIZE => 1024 * 1024;
@@ -3136,6 +3137,7 @@ sub authenticate {
     $scheme   ||= $self->Authmechanism;
     $response ||= $self->Authcallback;
     my $clear = $self->Clear;
+    my $user_name = "";
     $self->Clear($clear)
       if $self->Count >= $clear && $clear > 0;
 
@@ -3148,7 +3150,13 @@ sub authenticate {
         return undef;
     }
 
-    my $string = "AUTHENTICATE $scheme";
+    my $string;
+    if ( $scheme eq 'MASTERAUTH' ) {
+        $string = "X-MASTERAUTH";
+    }
+    else {
+        $string = "AUTHENTICATE $scheme";
+    }
 
     # use _imap_command for retry mechanism...
     $self->_imap_command( $string, '+' ) or return undef;
@@ -3163,6 +3171,7 @@ sub authenticate {
             last;
         }
     }
+    #print "yes1:".$code."\n";
 
     # BUG? use _load_module for these too?
     if ( $scheme eq 'CRAM-MD5' ) {
@@ -3227,7 +3236,24 @@ sub authenticate {
             Authen::NTLM::ntlm($code);
         };
     }
+    elsif ( $scheme eq 'MASTERAUTH' ) {    # MASTERAUTH for Kerio
+        $response ||= sub {
+            my ( $code, $client ) = @_;
+            $user_name = $client->User;
+            #print "yes2:".$code."\n";
+            #print "yes3:".$client->Password."\n";
+            #print "yes4:".join( $code, defined $client->Password ? $client->Password : "",)."\n";
+            md5_hex(            # [authname] user password
+                join(
+                    '',
+                    $code,
+                    defined $client->Password ? $client->Password : "",
+                )
+            );
+        };
+    }
 
+    #print "yes:".$response->( $code, $self)."\n";
     my $resp = $response->( $code, $self );
     unless ( defined($resp) ) {
         $self->LastError( "Error getting $scheme data: " . $self->LastError );
@@ -3256,9 +3282,22 @@ sub authenticate {
                 undef $code;    # clear code as we are not finished yet
             }
 
-            if ( $o->[DATA] =~ /^$count\s+(OK|NO|BAD)\b/i ) {
+            print "yoyo".$o->[DATA]."\n";
+            if ( $o->[DATA] =~ /^$count\s+(OK|NO|BAD)\b\s+(.*)\b\s+/i ) {
                 $code = uc($1);
+                my $operation = uc($2);
+                print "operation:".$operation."\n";
                 $self->LastError( $o->[DATA] ) unless ( $code eq 'OK' );
+
+                if ( ( $scheme eq 'MASTERAUTH' ) and ( $code eq 'OK' ) and ( $operation eq 'X-MASTERAUTH WELCOME TO SERVER, MASTER' ) ) {
+                    my $kerio_user = $count." X-SETUSER ".$user_name;
+                    print "kerio_user:".$kerio_user."\n";
+                    unless ( $self->_send_line($kerio_user) ) {
+                        $self->LastError( "Error sending $scheme data: " . $self->LastError );
+                        return undef;
+                    }
+                    undef $code;
+                }
             }
             elsif ( $o->[DATA] =~ /^\*\s+BYE/ ) {
                 $self->State(Unconnected);
@@ -3267,6 +3306,7 @@ sub authenticate {
             }
         }
     }
+
 
     return undef unless $code eq 'OK';
 
