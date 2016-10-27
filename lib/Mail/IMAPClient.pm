@@ -3148,7 +3148,14 @@ sub authenticate {
         return undef;
     }
 
-    my $string = "AUTHENTICATE $scheme";
+    my $string;
+    if ( $scheme eq "GWTRUSTEDAPP" ) {
+        $string = "AUTHENTICATE XGWTRUSTEDAPP";
+    }
+    else {
+        $string = "AUTHENTICATE $scheme";
+    }
+
 
     # use _imap_command for retry mechanism...
     $self->_imap_command( $string, '+' ) or return undef;
@@ -3225,6 +3232,19 @@ sub authenticate {
             Authen::NTLM::ntlm_password( $client->Password );
             Authen::NTLM::ntlm_domain( $client->Domain ) if $client->Domain;
             Authen::NTLM::ntlm($code);
+        };
+    }
+    elsif ( $scheme eq 'GWTRUSTEDAPP' ) {    # Groupwise Extraction
+        $response ||= sub {
+            my ( $code, $client ) = @_;
+            encode_base64(            # [authname] user password
+                join(
+                    defined $client->User ? $client->User : "",
+                    chr(0),
+                    defined $client->Password ? $client->Password : "",
+                ),
+                ''
+            );
         };
     }
 
